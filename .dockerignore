@@ -1,0 +1,20 @@
+# Git ile ilgili dosyalar
+.git
+.gitignore
+
+# Editor / IDE ayarları
+.vscode/
+.idea/
+*.swp
+
+# Sistem dosyaları
+.DS_Store
+Thumbs.db
+
+# Ortam dosyaları (gizli kalması gereken)
+.env
+.env.*
+
+# Docker-compose vs.
+docker-compose.yml
+docker-compose.override.yml

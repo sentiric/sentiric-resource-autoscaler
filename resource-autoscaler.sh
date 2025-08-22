@@ -6,8 +6,10 @@ CPU_THRESHOLD=${CPU_THRESHOLD:-80}
 CHECK_INTERVAL=${CHECK_INTERVAL:-10}
 SCALE_FACTOR=${SCALE_FACTOR:-1.5}
 DOCKER_SOCK="/var/run/docker.sock"
+LOG_LEVEL=${LOG_LEVEL:-"changes"} # "all" veya "changes"
 
 echo "🚀 Oto-scale başladı (${WATCH_CONTAINERS})"
+echo "📊 Log seviyesi: ${LOG_LEVEL}"
 
 # Docker API fonksiyonları
 docker_api() {
@@ -51,9 +53,14 @@ update_container_resources() {
 # Önceki değerleri saklamak için
 declare -A prev_cpu_usage
 declare -A prev_system_usage
+declare -A prev_cpu_percent
+declare -A prev_memory_usage
+declare -A prev_scale_actions
 
 while true; do
     output=""
+    has_changes=false
+    has_scale_actions=false
     IFS=',' read -ra containers <<< "$WATCH_CONTAINERS"
     
     for container_prefix in "${containers[@]}"; do
@@ -61,6 +68,7 @@ while true; do
         container_id=$(get_container_id "$container_prefix")
         if [ -z "$container_id" ] || [ "$container_id" = "null" ]; then
             output="${output}❌${container_prefix}:BULUNAMADI "
+            has_changes=true
             continue
         fi
         
@@ -88,8 +96,19 @@ while true; do
             cpu_percent=0
         fi
         
+        # Değişiklik kontrolü
+        cpu_diff=$(echo "scale=2; $cpu_percent - ${prev_cpu_percent[$container_id]:-0}" | bc | awk '{if ($1 < 0) print -$1; else print $1}')
+        mem_diff=$(echo "scale=2; $memory_usage_mb - ${prev_memory_usage[$container_id]:-0}" | bc | awk '{if ($1 < 0) print -$1; else print $1}')
+        
+        # Eğer önemli bir değişiklik varsa (CPU'da %1 veya memory'de 1MB)
+        if [ $(echo "$cpu_diff > 1" | bc -l) -eq 1 ] || [ $(echo "$mem_diff > 1" | bc -l) -eq 1 ]; then
+            has_changes=true
+        fi
+        
         prev_cpu_usage[$container_id]=$cpu_usage
         prev_system_usage[$container_id]=$system_usage
+        prev_cpu_percent[$container_id]=$cpu_percent
+        prev_memory_usage[$container_id]=$memory_usage_mb
         
         # Mevcut limitler
         current_cpu_limit=$(echo "$info" | jq '.HostConfig.NanoCpus')
@@ -101,7 +120,9 @@ while true; do
         if [ $(echo "$cpu_percent > $CPU_THRESHOLD" | bc -l) -eq 1 ] && [ "$current_cpu_limit" != "null" ]; then
             new_cpu_limit=$(echo "$current_cpu_limit * $SCALE_FACTOR" | bc | cut -d'.' -f1)
             update_container_resources "$container_id" "$new_cpu_limit" ""
-            scale_actions="${scale_actions}⬆️ CPU($(echo "scale=2; $new_cpu_limit / 1000000000" | bc))"
+            scale_actions="${scale_actions}⬆️ CPU($(echo "scale=2; $new_cpu_limit / 1000000000" | bc)GHz)"
+            has_scale_actions=true
+            has_changes=true
         fi
         
         # Memory Scale kontrolü
@@ -109,15 +130,31 @@ while true; do
             new_memory_limit=$(echo "$current_memory_limit * $SCALE_FACTOR" | bc | cut -d'.' -f1)
             update_container_resources "$container_id" "" "$new_memory_limit"
             scale_actions="${scale_actions}⬆️ MEM($(echo "scale=0; $new_memory_limit / 1024 / 1024" | bc)MB)"
+            has_scale_actions=true
+            has_changes=true
         fi
         
         status="✅ "
         [ -n "$scale_actions" ] && status="🔄"
         
+        # Scale action'ları öncekiyle karşılaştır
+        if [ "${prev_scale_actions[$container_id]}" != "$scale_actions" ]; then
+            has_changes=true
+        fi
+        prev_scale_actions[$container_id]=$scale_actions
+        
         output="${output}${status}${container_prefix}:${cpu_percent}%/${memory_usage_mb}MB${scale_actions} "
     done
     
-    # Tüm container'ları tek satırda göster
-    echo "[$(date +'%H:%M:%S')] ${output}"
+    # Log seviyesine göre çıktı göster
+    if [ "$LOG_LEVEL" = "all" ] || [ "$has_changes" = true ] || [ "$has_scale_actions" = true ]; then
+        echo "[$(date +'%H:%M:%S')] ${output}"
+        
+        # Scale action varsa ekstra log
+        if [ "$has_scale_actions" = true ]; then
+            echo "🎯 SCALE UYGULANDI: ${output}"
+        fi
+    fi
+    
     sleep $CHECK_INTERVAL
 done

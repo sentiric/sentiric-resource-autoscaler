@@ -1,0 +1,53 @@
+# docker-compose.service.yml
+# Service Geliştirme ortamı
+
+networks:
+  sentiric-net: { name: "${NETWORK_NAME:-sentiric-net}", driver: bridge }
+  
+volumes:
+  postgres_data:
+  rabbitmq_data:
+
+services:
+  # --- VERİ KATMANI ---
+  postgres:
+    build: { context: ../sentiric-postgres }
+    env_file: ["${ENV_FILE_PATH}"]
+    ports: ["5432:5432"]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ${CONFIG_REPO_PATH}/postgres-init:/docker-entrypoint-initdb.d
+    networks: [sentiric-net]
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    build: { context: ../sentiric-rabbitmq }
+    env_file: ["${ENV_FILE_PATH}"]
+    ports: ["15672:15672", "5672:5672"]
+    volumes: [rabbitmq_data:/var/lib/rabbitmq/]
+    networks: [sentiric-net]
+    restart: always
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3      
+
+  resource-autoscaler:
+    build: { context: ../sentiric-resource-autoscaler }
+    env_file: ["${ENV_FILE_PATH}"]     
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WATCH_CONTAINERS=api-gateway,sip-gateway
+      - MAX_MEMORY_MB=512
+      - CPU_THRESHOLD=75
+      - CHECK_INTERVAL=15
+      - SCALE_FACTOR=1.5
+      - LOG_LEVEL=changes
+    restart: always
