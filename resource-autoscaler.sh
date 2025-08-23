@@ -1,4 +1,4 @@
-### File: `sentiric-resource-autoscaler/resource-autoscaler.sh`
+﻿### File: `sentiric-resource-autoscaler/resource-autoscaler.sh`
 
 #!/bin/sh
 
