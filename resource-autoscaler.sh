@@ -1,5 +1,12 @@
 #!/bin/bash
 
+# Debug için: Script'in çalıştığını göster
+echo "$(date '+%Y-%m-%d %H:%M:%S') - Script başlatıldı" >&2
+
+# Environment variables'ları logla
+echo "Environment Variables:" >&2
+env | grep -E '(WATCH|CPU|MEMORY|LOG)' >&2
+
 # Enhanced Docker Container Auto-Scaler
 # Features: CPU/Memory scaling, cooldown periods, multiple thresholds, detailed logging
 
