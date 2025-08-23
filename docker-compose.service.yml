@@ -38,16 +38,31 @@ services:
       timeout: 10s
       retries: 3      
 
-  resource-autoscaler:
-    build: { context: ../sentiric-resource-autoscaler }
-    env_file: ["${ENV_FILE_PATH}"]     
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    environment:
-      - WATCH_CONTAINERS=api-gateway,sip-gateway
-      - MAX_MEMORY_MB=512
-      - CPU_THRESHOLD=75
-      - CHECK_INTERVAL=15
-      - SCALE_FACTOR=1.5
-      - LOG_LEVEL=changes
-    restart: always
+resource-autoscaler:
+  build: 
+    context: ../sentiric-resource-autoscaler
+  env_file: ["${ENV_FILE_PATH}"]     
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+  environment:
+    - WATCH_CONTAINERS=postgres,rabbitmq
+    - CPU_THRESHOLD=75
+    - MEMORY_THRESHOLD_PERCENT=85
+    - CHECK_INTERVAL=15
+    - SCALE_FACTOR=1.5
+    - COOLDOWN_PERIOD=90
+    - MAX_MEMORY_MB=2048
+    - MIN_MEMORY_MB=128
+    - MAX_CPU_QUOTA=80000
+    - MIN_CPU_QUOTA=20000
+    - LOG_LEVEL=changes
+    - STATS_HISTORY_COUNT=5
+  restart: unless-stopped
+  deploy:
+    resources:
+      limits:
+        memory: 128M
+        cpus: '0.5'
+      reservations:
+        memory: 64M
+        cpus: '0.25'
