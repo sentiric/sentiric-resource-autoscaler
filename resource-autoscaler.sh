@@ -1,6 +1,6 @@
 ### File: `sentiric-resource-autoscaler/resource-autoscaler.sh`
 
-#!/bin/bash
+#!/bin/sh
 
 # Script'in herhangi bir hatada hemen çıkmasını engellemek için bu satırı kaldırıyoruz veya yorumluyoruz.
 # set -e
