@@ -2,30 +2,29 @@
 
 #!/bin/bash
 
+# Script'in herhangi bir hatada hemen çıkmasını engellemek için bu satırı kaldırıyoruz veya yorumluyoruz.
+# set -e
+
 WATCH_CONTAINERS=${WATCH_CONTAINERS:-"api-gateway,sip-gateway"}
 CPU_THRESHOLD=${CPU_THRESHOLD:-80}
-MEMORY_THRESHOLD_PERCENT=${MEMORY_THRESHOLD_PERCENT:-90} # Bellek eşiği yüzdesi
+MEMORY_THRESHOLD_PERCENT=${MEMORY_THRESHOLD_PERCENT:-90}
 CHECK_INTERVAL=${CHECK_INTERVAL:-15}
 SCALE_FACTOR=${SCALE_FACTOR:-1.5}
-COOLDOWN_PERIOD=${COOLDOWN_PERIOD:-60} # Saniye cinsinden soğuma süresi
+COOLDOWN_PERIOD=${COOLDOWN_PERIOD:-60}
 DOCKER_SOCK="/var/run/docker.sock"
-LOG_LEVEL=${LOG_LEVEL:-"changes"} # "all" veya "changes"
+LOG_LEVEL=${LOG_LEVEL:-"changes"}
 
 echo "🚀 Oto-scale başladı (${WATCH_CONTAINERS})"
 echo "📊 Log seviyesi: ${LOG_LEVEL}"
 echo "🧠 CPU Eşiği: ${CPU_THRESHOLD}% | Bellek Eşiği: ${MEMORY_THRESHOLD_PERCENT}% | Soğuma Süresi: ${COOLDOWN_PERIOD}s"
 
-# Docker API fonksiyonları
 docker_api() {
     local endpoint="$1"
-    # Timeout ekleyerek Docker soketinin yanıt vermemesi durumunu yönetelim
     curl -s --max-time 5 --unix-socket "$DOCKER_SOCK" "http://localhost/$endpoint"
 }
 
 get_container_id() {
     local name="$1"
-    # GÜVENİLİRLİK DÜZELTMESİ: Artık 'contains' filtresiyle daha esnek eşleştirme yapıyoruz.
-    # Bu, 'sentiric-dev-core-agent-service-1' gibi bir ismin içinde 'agent-service' geçmesini yeterli bulur.
     docker_api "containers/json" | jq -r --arg name "$name" '.[] | select(.Names[] | contains($name)) | .Id' | head -n 1
 }
 
@@ -81,20 +80,26 @@ while true; do
         fi
         
         stats=$(get_container_stats "$container_id")
+        if [ -z "$stats" ]; then
+            output="${output}⚠️ ${container_prefix}:STATS_YOK "
+            has_changes=true
+            continue
+        fi
+
         info=$(get_container_info "$container_id")
         
-        cpu_usage=$(echo "$stats" | jq '.cpu_stats.cpu_usage.total_usage')
-        system_usage=$(echo "$stats" | jq '.cpu_stats.system_cpu_usage')
-        memory_usage=$(echo "$stats" | jq '.memory_stats.usage')
-        
-        memory_usage_mb=$(echo "scale=2; $memory_usage / 1024 / 1024" | bc)
-        
-        cpu_delta=$(echo "$cpu_usage - ${prev_cpu_usage[$container_id]:-0}" | bc)
-        system_delta=$(echo "$system_usage - ${prev_system_usage[$container_id]:-0}" | bc)
-        
+        # GÜVENLİK: jq'dan gelen değerlerin boş veya null olmadığını kontrol et
+        cpu_usage=$(echo "$stats" | jq '.cpu_stats.cpu_usage.total_usage // 0')
+        system_usage=$(echo "$stats" | jq '.cpu_stats.system_cpu_usage // 0')
+        memory_usage=$(echo "$stats" | jq '.memory_stats.usage // 0')
         num_cpus=$(echo "$stats" | jq '.cpu_stats.online_cpus // 1')
-
-        if [ "$system_delta" -gt 0 ] && [ "$cpu_delta" -gt 0 ]; then
+        
+        memory_usage_mb=$(echo "scale=2; ${memory_usage:-0} / 1024 / 1024" | bc)
+        
+        cpu_delta=$(echo "${cpu_usage:-0} - ${prev_cpu_usage[$container_id]:-0}" | bc)
+        system_delta=$(echo "${system_usage:-0} - ${prev_system_usage[$container_id]:-0}" | bc)
+        
+        if [ "$(echo "$system_delta > 0" | bc -l)" -eq 1 ] && [ "$(echo "$cpu_delta > 0" | bc -l)" -eq 1 ]; then
              cpu_percent=$(echo "scale=2; ($cpu_delta / $system_delta) * $num_cpus * 100" | bc)
         else
             cpu_percent=0
@@ -103,7 +108,7 @@ while true; do
         cpu_diff=$(echo "scale=2; $cpu_percent - ${prev_cpu_percent[$container_id]:-0}" | bc | awk '{if ($1 < 0) print -$1; else print $1}')
         mem_diff=$(echo "scale=2; $memory_usage_mb - ${prev_memory_usage[$container_id]:-0}" | bc | awk '{if ($1 < 0) print -$1; else print $1}')
         
-        if [ $(echo "$cpu_diff > 1" | bc -l) -eq 1 ] || [ $(echo "$mem_diff > 1" | bc -l) -eq 1 ]; then
+        if [ "$(echo "$cpu_diff > 1" | bc -l)" -eq 1 ] || [ "$(echo "$mem_diff > 1" | bc -l)" -eq 1 ]; then
             has_changes=true
         fi
         
@@ -112,29 +117,28 @@ while true; do
         prev_cpu_percent[$container_id]=$cpu_percent
         prev_memory_usage[$container_id]=$memory_usage_mb
         
-        current_cpu_limit=$(echo "$info" | jq '.HostConfig.CpuQuota')
-        current_memory_limit=$(echo "$info" | jq '.HostConfig.Memory')
+        current_cpu_limit=$(echo "$info" | jq '.HostConfig.CpuQuota // 0')
+        current_memory_limit=$(echo "$info" | jq '.HostConfig.Memory // 0')
         
         scale_actions=""
-
         now=$(date +%s)
         last_scale_time=${cooldown_timestamps[$container_id]:-0}
+
         if (( now - last_scale_time < COOLDOWN_PERIOD )); then
              output="${output}❄️ ${container_prefix}:${cpu_percent}%/${memory_usage_mb}MB "
              continue
         fi
         
         # CPU Scale kontrolü
-        if [ $(echo "$cpu_percent > $CPU_THRESHOLD" | bc -l) -eq 1 ] && [ "$current_cpu_limit" != "null" ] && [ "$current_cpu_limit" -gt 0 ]; then
+        if [ "$(echo "$cpu_percent > $CPU_THRESHOLD" | bc -l)" -eq 1 ] && [ "$current_cpu_limit" -gt 0 ]; then
             new_cpu_limit=$(echo "$current_cpu_limit * $SCALE_FACTOR" | bc | cut -d'.' -f1)
             update_container_resources "$container_id" "$new_cpu_limit" ""
             scale_actions="${scale_actions}⬆️ CPU"
             has_changes=true; cooldown_timestamps[$container_id]=$now
         fi
         
-        # Bellek Scale kontrolü (AKILLI MANTIK)
-        if [ "$current_memory_limit" != "null" ] && [ "$current_memory_limit" -gt 0 ]; then
-            # Bellek eşiğini, konteynerin kendi limitinin yüzdesi olarak hesapla
+        # Bellek Scale kontrolü
+        if [ "$current_memory_limit" -gt 0 ]; then
             memory_threshold_bytes=$(echo "$current_memory_limit * $MEMORY_THRESHOLD_PERCENT / 100" | bc | cut -d'.' -f1)
             if [ "$memory_usage" -gt "$memory_threshold_bytes" ]; then
                 new_memory_limit=$(echo "$current_memory_limit * $SCALE_FACTOR" | bc | cut -d'.' -f1)
